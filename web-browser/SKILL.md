@@ -9,17 +9,7 @@ license: Stolen from Mario
 Minimal browser tools for collaborative site exploration. Commands start the
 socket-activated browser daemon on demand; do not start Chrome manually.
 
-## One-Time Setup
-
-```bash
-systemctl --user link "$PWD/systemd/agent-web-browser.socket" "$PWD/systemd/agent-web-browser.service"
-systemctl --user enable --now agent-web-browser.socket
-```
-
-The daemon starts one headful Chrome instance lazily and uses an isolated
-profile at `~/.cache/agent-web/profile`.
-
-Chrome's internal CDP endpoint defaults to `127.0.0.1:19339`.
+Install notes are in `README.md`.
 
 ## Navigate
 
@@ -32,18 +22,6 @@ Chrome's internal CDP endpoint defaults to `127.0.0.1:19339`.
 
 Navigate the caller group's current tab or open a new tab. URLs without a
 scheme default to `https://`.
-
-## Status
-
-```bash
-./bin/agent-web status
-./bin/agent-web daemon-status
-./bin/agent-web list-tabs
-```
-
-Checks that the daemon is working and reports how many tabs this caller session owns.
-Use `daemon-status` for detailed daemon diagnostics.
-Use `list-tabs` to list only this caller session's tabs.
 
 ## Snapshot And Actions
 
@@ -128,17 +106,18 @@ Takes a screenshot and returns a temp file path.
 - Default: current viewport
 - `--full-page`: captures full document height
 
-## Close
+## Tabs
 
 ```bash
+./bin/agent-web list-tabs
 ./bin/agent-web close
 ./bin/agent-web close-session
 ```
 
-Closes this caller session's current tab.
-Use `close-session` to close all tabs owned by this caller session.
+List this caller session's tabs, close the current tab, or close all tabs owned
+by this caller session.
 
-## Pick Elements
+## Let The User Pick Elements
 
 ```bash
 ./bin/agent-web pick "Click the submit button"
@@ -159,3 +138,13 @@ Run after navigating to a page:
 ```bash
 ./bin/agent-web nav https://example.com && ./bin/agent-web dismiss-cookies
 ```
+
+## Status
+
+```bash
+./bin/agent-web status
+./bin/agent-web daemon-status
+```
+
+Checks that the daemon is working and reports how many tabs this caller session owns.
+Use `daemon-status` for detailed daemon diagnostics.
