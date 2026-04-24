@@ -4,16 +4,16 @@
 
 import WebSocket from "ws";
 
-const DEBUG_HOST = process.env.BROWSER_DEBUG_HOST || "localhost";
-const DEBUG_PORT = Number(process.env.BROWSER_DEBUG_PORT || 9222);
-const DEBUG_HTTP_URL = `http://${DEBUG_HOST}:${DEBUG_PORT}`;
-
-export async function connect(timeout = 5000) {
+export async function connect(options = {}) {
+  const timeout = options.timeout ?? 5000;
+  const host = options.host || process.env.BROWSER_DEBUG_HOST || "127.0.0.1";
+  const port = Number(options.port || process.env.BROWSER_DEBUG_PORT || 9222);
+  const httpUrl = options.httpUrl || `http://${host}:${port}`;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeout);
 
   try {
-    const resp = await fetch(`${DEBUG_HTTP_URL}/json/version`, {
+    const resp = await fetch(`${httpUrl}/json/version`, {
       signal: controller.signal,
     });
     const { webSocketDebuggerUrl } = await resp.json();
@@ -39,16 +39,17 @@ export async function connect(timeout = 5000) {
     clearTimeout(timeoutId);
     if (e.name === "AbortError") {
       throw new Error(
-        `Connection timeout - is Chrome running with --remote-debugging-port=${DEBUG_PORT}?`,
+        `Connection timeout - is Chrome running with --remote-debugging-port=${port}?`,
       );
     }
     throw e;
   }
 }
 
-class CDP {
+export class CDP {
   constructor(ws) {
     this.ws = ws;
+    this.closed = false;
     this.id = 0;
     this.callbacks = new Map();
     this.sessions = new Map();
@@ -71,6 +72,29 @@ class CDP {
         this.emit(msg.method, msg.params || {}, msg.sessionId || null);
       }
     });
+
+    ws.on("close", () => {
+      this.closed = true;
+      const error = new Error("Chrome CDP connection closed");
+      for (const { reject } of this.callbacks.values()) {
+        reject(error);
+      }
+      this.callbacks.clear();
+      this.emit("CDP.closed", {}, null);
+    });
+
+    ws.on("error", (error) => {
+      this.closed = true;
+      for (const { reject } of this.callbacks.values()) {
+        reject(error);
+      }
+      this.callbacks.clear();
+      this.emit("CDP.error", { error }, null);
+    });
+  }
+
+  isOpen() {
+    return !this.closed && this.ws.readyState === WebSocket.OPEN;
   }
 
   on(method, handler) {
@@ -104,6 +128,10 @@ class CDP {
 
   send(method, params = {}, sessionId = null, timeout = 10000) {
     return new Promise((resolve, reject) => {
+      if (!this.isOpen()) {
+        reject(new Error("Chrome CDP connection is closed"));
+        return;
+      }
       const msgId = ++this.id;
       const msg = { id: msgId, method, params };
       if (sessionId) msg.sessionId = sessionId;
@@ -139,6 +167,10 @@ class CDP {
       flatten: true,
     });
     return sessionId;
+  }
+
+  async detachFromSession(sessionId) {
+    await this.send("Target.detachFromTarget", { sessionId });
   }
 
   async evaluate(sessionId, expression, timeout = 30000) {
@@ -211,6 +243,7 @@ class CDP {
   }
 
   close() {
+    this.closed = true;
     this.ws.close();
   }
 }

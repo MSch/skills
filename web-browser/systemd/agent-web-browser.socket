@@ -1,0 +1,10 @@
+[Unit]
+Description=Agent Web Browser daemon socket
+
+[Socket]
+ListenStream=%t/agent-web/browser.sock
+SocketDirectory=agent-web
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

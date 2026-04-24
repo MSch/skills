@@ -1,0 +1,149 @@
+#!/usr/bin/env node
+
+import { writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { callDaemon } from "../lib/daemon-rpc.js";
+import {
+  COOKIE_DISMISS_SCRIPT,
+  IFRAME_DISMISS_SCRIPT,
+  PICK_SCRIPT,
+} from "../lib/page-scripts.js";
+
+function usage() {
+  console.log("Usage: agent-web <command> [args]");
+  console.log("");
+  console.log("Commands:");
+  console.log("  nav <url> [--new]");
+  console.log("  eval <javascript>");
+  console.log("  screenshot [--full-page]");
+  console.log("  pick <message>");
+  console.log("  dismiss-cookies [--reject]");
+  console.log("  status");
+  console.log("  daemon-status");
+}
+
+function printValue(value) {
+  if (value === "") return;
+  console.log(value);
+}
+
+function normalizeUrl(value) {
+  if (/^[a-zA-Z][a-zA-Z\d+.-]*:\/\//.test(value)) return value;
+  if (/^(about|data|file|javascript|chrome|chrome-extension):/.test(value)) {
+    return value;
+  }
+  return `https://${value}`;
+}
+
+async function main() {
+  const [command, ...args] = process.argv.slice(2);
+
+  if (!command || command === "--help" || command === "-h") {
+    usage();
+    process.exit(command ? 0 : 1);
+  }
+
+  if (command === "status") {
+    const status = await callDaemon("status", {}, { timeout: 10000 });
+    console.log(`ok: ${status.ok ? "yes" : "no"}`);
+    console.log(`session: ${status.session}`);
+    console.log(`tabs: ${status.tabs}`);
+    if (status.activeUrl) console.log(`active: ${status.activeUrl}`);
+    return;
+  }
+
+  if (command === "daemon-status") {
+    const status = await callDaemon("daemonStatus", {}, { timeout: 10000 });
+    console.log(JSON.stringify(status, null, 2));
+    return;
+  }
+
+  if (command === "nav") {
+    const rawUrl = args.find((arg) => !arg.startsWith("--"));
+    const newTab = args.includes("--new");
+    if (!rawUrl) {
+      console.error("Usage: agent-web nav <url> [--new]");
+      process.exit(1);
+    }
+    const url = normalizeUrl(rawUrl);
+    await callDaemon("nav", { url, newTab });
+    console.log(newTab ? "✓ Opened:" : "✓ Navigated to:", url);
+    return;
+  }
+
+  if (command === "eval") {
+    const code = args.join(" ");
+    if (!code) {
+      console.error("Usage: agent-web eval '<javascript>'");
+      process.exit(1);
+    }
+    const result = await callDaemon("eval", { code });
+    printValue(result.formatted);
+    return;
+  }
+
+  if (command === "screenshot") {
+    const unknown = args.filter((arg) => arg !== "--full-page");
+    if (unknown.length > 0) {
+      console.error(`✗ Unknown argument: ${unknown[0]}`);
+      console.error("Usage: agent-web screenshot [--full-page]");
+      process.exit(1);
+    }
+    const result = await callDaemon("screenshot", { fullPage: args.includes("--full-page") });
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const filepath = join(tmpdir(), `screenshot-${timestamp}.png`);
+    writeFileSync(filepath, Buffer.from(result.data, "base64"));
+    console.log(filepath);
+    return;
+  }
+
+  if (command === "pick") {
+    const message = args.join(" ");
+    if (!message) {
+      console.error("Usage: agent-web pick <message>");
+      process.exit(1);
+    }
+    const expression = `(${PICK_SCRIPT})(${JSON.stringify(message)})`;
+    const result = await callDaemon("pick", { expression, timeout: 300000 }, { timeout: 310000 });
+    printValue(result.formatted);
+    return;
+  }
+
+  if (command === "dismiss-cookies") {
+    const reject = args.includes("--reject");
+    const unknown = args.filter((arg) => arg !== "--reject");
+    if (unknown.length > 0) {
+      console.error(`✗ Unknown argument: ${unknown[0]}`);
+      console.error("Usage: agent-web dismiss-cookies [--reject]");
+      process.exit(1);
+    }
+    const accept = !reject;
+    const mode = reject ? "reject" : "accept";
+    const result = await callDaemon(
+      "dismissCookies",
+      {
+        mainExpression: `(${COOKIE_DISMISS_SCRIPT})(${accept})`,
+        frameExpression: `(${IFRAME_DISMISS_SCRIPT})(${accept})`,
+      },
+      { timeout: 45000 },
+    );
+    if (result.clicked.length > 0) {
+      console.log(`✓ Dismissed cookie dialog (${mode}): ${result.clicked.join(", ")}`);
+    } else {
+      console.log(`○ No cookie dialog found to ${mode}`);
+    }
+    return;
+  }
+
+  console.error(`✗ Unknown command: ${command}`);
+  usage();
+  process.exit(1);
+}
+
+try {
+  await main();
+} catch (e) {
+  console.error("✗", e.message);
+  process.exit(1);
+}

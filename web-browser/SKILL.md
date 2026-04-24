@@ -1,56 +1,53 @@
 ---
 name: web-browser
-description: "Allows to interact with web pages by performing actions such as clicking buttons, filling out forms, and navigating links. It works by remote controlling Google Chrome or Chromium browsers using the Chrome DevTools Protocol (CDP). When Claude needs to browse the web, it can use this skill to do so."
+description: "Allows interacting with web pages by navigating, evaluating JavaScript, taking screenshots, picking elements, and dismissing cookie dialogs. When the agent needs to browse the web, it can use this skill to do so."
 license: Stolen from Mario
 ---
 
 # Web Browser Skill
 
-Minimal CDP tools for collaborative site exploration.
+Minimal browser tools for collaborative site exploration. Commands start the
+socket-activated browser daemon on demand; do not start Chrome manually.
 
-## Start Chrome
-
-```bash
-./scripts/start.js                  # Isolated reusable profile (default)
-./scripts/start.js --profile        # Copy your profile into isolated cache
-./scripts/start.js --reset-profile  # Clear selected cached profile before launch
-```
-
-Starts Chrome with remote debugging (default port `:9222`).
-
-Profile behavior:
-- Default mode uses: `~/.cache/agent-web/browser/fresh-profile`
-- `--profile` mode uses: `~/.cache/agent-web/browser/profile-copy`
-- The skill **does not attach to your live Chrome profile directly**
-- If `:9222` is already used by an unknown instance, start will fail instead of reusing it
-
-If Chrome is installed in a non-standard location, set:
+## One-Time Setup
 
 ```bash
-BROWSER_BIN=/path/to/chrome ./scripts/start.js
+systemctl --user link "$PWD/systemd/agent-web-browser.socket" "$PWD/systemd/agent-web-browser.service"
+systemctl --user enable --now agent-web-browser.socket
 ```
 
-Optional debug endpoint override:
+The daemon starts one headful Chrome instance lazily and uses an isolated
+profile at `~/.cache/agent-web/profile`.
 
-```bash
-BROWSER_DEBUG_PORT=9333 ./scripts/start.js
-```
+Chrome's internal CDP endpoint defaults to `127.0.0.1:19339`.
 
 ## Navigate
 
 ```bash
-./scripts/nav.js https://example.com
-./scripts/nav.js https://example.com --new
+./bin/agent-web nav https://example.com
+./bin/agent-web nav example.com
+./bin/agent-web nav https://example.com --new
 ```
 
-Navigate current tab or open new tab.
+Navigate the caller group's current tab or open a new tab. URLs without a
+scheme default to `https://`.
+
+## Status
+
+```bash
+./bin/agent-web status
+./bin/agent-web daemon-status
+```
+
+Checks that the daemon is working and reports how many tabs this caller session owns.
+Use `daemon-status` for detailed daemon diagnostics.
 
 ## Evaluate JavaScript
 
 ```bash
-./scripts/eval.js 'document.title'
-./scripts/eval.js 'document.querySelectorAll("a").length'
-./scripts/eval.js 'JSON.stringify(Array.from(document.querySelectorAll("a")).map(a => ({ text: a.textContent.trim(), href: a.href })).filter(link => !link.href.startsWith("https://")))'
+./bin/agent-web eval 'document.title'
+./bin/agent-web eval 'document.querySelectorAll("a").length'
+./bin/agent-web eval 'JSON.stringify(Array.from(document.querySelectorAll("a")).map(a => ({ text: a.textContent.trim(), href: a.href })).filter(link => !link.href.startsWith("https://")))'
 ```
 
 Execute JavaScript in active tab (async context). Be careful with string escaping, best to use single quotes.
@@ -58,8 +55,8 @@ Execute JavaScript in active tab (async context). Be careful with string escapin
 ## Screenshot
 
 ```bash
-./scripts/screenshot.js
-./scripts/screenshot.js --full-page
+./bin/agent-web screenshot
+./bin/agent-web screenshot --full-page
 ```
 
 Takes a screenshot and returns a temp file path.
@@ -70,7 +67,7 @@ Takes a screenshot and returns a temp file path.
 ## Pick Elements
 
 ```bash
-./scripts/pick.js "Click the submit button"
+./bin/agent-web pick "Click the submit button"
 ```
 
 Interactive element picker. Click to select, Cmd/Ctrl+Click for multi-select, Enter to finish.
@@ -78,37 +75,13 @@ Interactive element picker. Click to select, Cmd/Ctrl+Click for multi-select, En
 ## Dismiss Cookie Dialogs
 
 ```bash
-./scripts/dismiss-cookies.js          # Accept cookies
-./scripts/dismiss-cookies.js --reject # Reject cookies (where possible)
+./bin/agent-web dismiss-cookies          # Accept cookies
+./bin/agent-web dismiss-cookies --reject # Reject cookies (where possible)
 ```
 
 Automatically dismisses EU cookie consent dialogs.
 
 Run after navigating to a page:
 ```bash
-./scripts/nav.js https://example.com && ./scripts/dismiss-cookies.js
-```
-
-## Background Logging (Console + Errors + Network)
-
-Automatically started by `start.js` and writes JSONL logs to:
-
-```
-~/.cache/agent-web/logs/YYYY-MM-DD/<targetId>.jsonl
-```
-
-Manually start:
-```bash
-./scripts/watch.js
-```
-
-Tail latest log:
-```bash
-./scripts/logs-tail.js           # dump current log and exit
-./scripts/logs-tail.js --follow  # keep following
-```
-
-Summarize network responses:
-```bash
-./scripts/net-summary.js
+./bin/agent-web nav https://example.com && ./bin/agent-web dismiss-cookies
 ```

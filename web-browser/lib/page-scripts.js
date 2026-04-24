@@ -1,25 +1,102 @@
-#!/usr/bin/env node
+export const PICK_SCRIPT = `(message) => {
+  if (!message) throw new Error("pick() requires a message parameter");
+  return new Promise((resolve) => {
+    const selections = [];
+    const selectedElements = new Set();
 
-/**
- * Cookie Consent Dismissal Helper
- *
- * Automatically accepts cookie consent dialogs on EU websites.
- * Supports common CMPs: OneTrust, Cookiebot, Didomi, Quantcast, Google, BBC, Amazon, etc.
- *
- * Usage:
- *   ./dismiss-cookies.js          # Accept cookies
- *   ./dismiss-cookies.js --reject # Reject cookies (where possible)
- */
+    const overlay = document.createElement("div");
+    overlay.style.cssText = "position:fixed;top:0;left:0;width:100%;height:100%;z-index:2147483647;pointer-events:none";
 
-import { connect } from "./cdp.js";
+    const highlight = document.createElement("div");
+    highlight.style.cssText = "position:absolute;border:2px solid #3b82f6;background:rgba(59,130,246,0.1);transition:all 0.1s";
+    overlay.appendChild(highlight);
 
-const DEBUG = process.env.DEBUG === "1";
-const log = DEBUG ? (...args) => console.error("[debug]", ...args) : () => {};
+    const banner = document.createElement("div");
+    banner.style.cssText = "position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#1f2937;color:white;padding:12px 24px;border-radius:8px;font:14px sans-serif;box-shadow:0 4px 12px rgba(0,0,0,0.3);pointer-events:auto;z-index:2147483647";
 
-const reject = process.argv.includes("--reject");
-const mode = reject ? "reject" : "accept";
+    const updateBanner = () => {
+      banner.textContent = message + " (" + selections.length + " selected, Cmd/Ctrl+click to add, Enter to finish, ESC to cancel)";
+    };
+    updateBanner();
 
-const COOKIE_DISMISS_SCRIPT = `(acceptCookies) => {
+    document.body.append(banner, overlay);
+
+    const cleanup = () => {
+      document.removeEventListener("mousemove", onMove, true);
+      document.removeEventListener("click", onClick, true);
+      document.removeEventListener("keydown", onKey, true);
+      overlay.remove();
+      banner.remove();
+      selectedElements.forEach((el) => { el.style.outline = ""; });
+    };
+
+    const onMove = (e) => {
+      const el = document.elementFromPoint(e.clientX, e.clientY);
+      if (!el || overlay.contains(el) || banner.contains(el)) return;
+      const r = el.getBoundingClientRect();
+      highlight.style.cssText = "position:absolute;border:2px solid #3b82f6;background:rgba(59,130,246,0.1);top:" + r.top + "px;left:" + r.left + "px;width:" + r.width + "px;height:" + r.height + "px";
+    };
+
+    const buildElementInfo = (el) => {
+      const parents = [];
+      let current = el.parentElement;
+      while (current && current !== document.body) {
+        const parentInfo = current.tagName.toLowerCase();
+        const id = current.id ? "#" + current.id : "";
+        const cls = current.className ? "." + current.className.trim().split(/\\s+/).join(".") : "";
+        parents.push(parentInfo + id + cls);
+        current = current.parentElement;
+      }
+      return {
+        tag: el.tagName.toLowerCase(),
+        id: el.id || null,
+        class: el.className || null,
+        text: (el.textContent || "").trim().slice(0, 200) || null,
+        html: el.outerHTML.slice(0, 500),
+        parents: parents.join(" > "),
+      };
+    };
+
+    const onClick = (e) => {
+      if (banner.contains(e.target)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const el = document.elementFromPoint(e.clientX, e.clientY);
+      if (!el || overlay.contains(el) || banner.contains(el)) return;
+
+      if (e.metaKey || e.ctrlKey) {
+        if (!selectedElements.has(el)) {
+          selectedElements.add(el);
+          el.style.outline = "3px solid #10b981";
+          selections.push(buildElementInfo(el));
+          updateBanner();
+        }
+      } else {
+        cleanup();
+        const info = buildElementInfo(el);
+        resolve(selections.length > 0 ? selections : info);
+      }
+    };
+
+    const onKey = (e) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        cleanup();
+        resolve(null);
+      } else if (e.key === "Enter" && selections.length > 0) {
+        e.preventDefault();
+        cleanup();
+        resolve(selections);
+      }
+    };
+
+    document.addEventListener("mousemove", onMove, true);
+    document.addEventListener("click", onClick, true);
+    document.addEventListener("keydown", onKey, true);
+  });
+}`;
+
+export const COOKIE_DISMISS_SCRIPT = `(acceptCookies) => {
   const clicked = [];
 
   const isVisible = (el) => {
@@ -243,7 +320,7 @@ const COOKIE_DISMISS_SCRIPT = `(acceptCookies) => {
   return clicked;
 }`;
 
-const IFRAME_DISMISS_SCRIPT = `(acceptCookies) => {
+export const IFRAME_DISMISS_SCRIPT = `(acceptCookies) => {
   const clicked = [];
 
   const isVisible = (el) => {
@@ -277,8 +354,7 @@ const IFRAME_DISMISS_SCRIPT = `(acceptCookies) => {
   return clicked;
 }`;
 
-// Recursively collect all frames
-function collectFrames(frameTree, frames = []) {
+export function collectFrames(frameTree, frames = []) {
   frames.push({ id: frameTree.frame.id, url: frameTree.frame.url });
   if (frameTree.childFrames) {
     for (const child of frameTree.childFrames) {
@@ -286,88 +362,4 @@ function collectFrames(frameTree, frames = []) {
     }
   }
   return frames;
-}
-
-// Global timeout
-const globalTimeout = setTimeout(() => {
-  console.error("✗ Global timeout exceeded (30s)");
-  process.exit(1);
-}, 30000);
-
-try {
-  log("connecting...");
-  const cdp = await connect(5000);
-
-  log("getting pages...");
-  const pages = await cdp.getPages();
-  const page = pages.at(-1);
-
-  if (!page) {
-    console.error("✗ No active tab found");
-    process.exit(1);
-  }
-
-  log("attaching to page...");
-  const sessionId = await cdp.attachToPage(page.targetId);
-
-  // Wait a bit for consent dialogs to appear
-  await new Promise((r) => setTimeout(r, 500));
-
-  log("trying main page...");
-  let result = await cdp.evaluate(sessionId, `(${COOKIE_DISMISS_SCRIPT})(${!reject})`);
-
-  // If nothing found, try iframes
-  if (result.length === 0) {
-    log("trying iframes...");
-    try {
-      const frameTree = await cdp.getFrameTree(sessionId);
-      const frames = collectFrames(frameTree);
-
-      for (const frame of frames) {
-        if (frame.url === "about:blank" || frame.url.startsWith("javascript:")) continue;
-        if (
-          frame.url.includes("sp_message") ||
-          frame.url.includes("consent") ||
-          frame.url.includes("privacy") ||
-          frame.url.includes("cmp") ||
-          frame.url.includes("sourcepoint") ||
-          frame.url.includes("cookie") ||
-          frame.url.includes("privacy-mgmt")
-        ) {
-          log("trying frame:", frame.url.slice(0, 60));
-          try {
-            const frameResult = await cdp.evaluateInFrame(
-              sessionId,
-              frame.id,
-              `(${IFRAME_DISMISS_SCRIPT})(${!reject})`
-            );
-            if (frameResult.length > 0) {
-              result = frameResult;
-              break;
-            }
-          } catch (e) {
-            log("frame error:", e.message);
-          }
-        }
-      }
-    } catch (e) {
-      log("getFrameTree error:", e.message);
-    }
-  }
-
-  if (result.length > 0) {
-    console.log(`✓ Dismissed cookie dialog (${mode}): ${result.join(", ")}`);
-  } else {
-    console.log(`○ No cookie dialog found to ${mode}`);
-  }
-
-  log("closing...");
-  cdp.close();
-  log("done");
-} catch (e) {
-  console.error("✗", e.message);
-  process.exit(1);
-} finally {
-  clearTimeout(globalTimeout);
-  setTimeout(() => process.exit(0), 100);
 }
