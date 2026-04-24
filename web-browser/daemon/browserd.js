@@ -324,6 +324,12 @@ async function ensureChrome() {
   return chromeConnecting;
 }
 
+async function connectExistingChrome() {
+  if (chrome?.isOpen()) return chrome;
+  if (!(await isChromeUp())) return null;
+  return ensureChrome();
+}
+
 function getGroup(groupId) {
   if (!groups.has(groupId)) {
     groups.set(groupId, {
@@ -723,22 +729,67 @@ async function handleRequest(request) {
     };
   }
 
-  const group = getGroup(caller.id);
-  watchGroupLeader(group, caller);
-  const cdp = await ensureChrome();
-
   if (request.method === "status") {
-    const pages = await listPages(cdp);
-    const ownedPages = pages.filter((page) => group.targets.has(page.targetId));
-    const activePage = ownedPages.find((page) => page.targetId === group.activeTargetId);
+    const group = groups.get(caller.id);
+    const cdp = group ? await connectExistingChrome() : null;
+    const pages = cdp ? await listPages(cdp) : [];
+    const ownedPages = group ? pages.filter((page) => group.targets.has(page.targetId)) : [];
+    const activePage = ownedPages.find((page) => page.targetId === group?.activeTargetId);
 
     return {
       ok: true,
       session: caller.id,
-      tabs: ownedPages.length,
+      tabs: cdp ? ownedPages.length : group?.targets.size || 0,
       activeUrl: activePage?.url || null,
     };
   }
+
+  if (request.method === "listTabs") {
+    const group = groups.get(caller.id);
+    const cdp = group ? await connectExistingChrome() : null;
+    if (!group || !cdp) return { tabs: [] };
+    const pages = await listPages(cdp);
+    const tabs = pages
+      .filter((page) => group.targets.has(page.targetId))
+      .map((page, index) => ({
+        index: index + 1,
+        targetId: page.targetId,
+        title: page.title || "",
+        url: page.url || "",
+        active: page.targetId === group.activeTargetId,
+      }));
+    return { tabs };
+  }
+
+  if (request.method === "close") {
+    const group = groups.get(caller.id);
+    const cdp = group ? await connectExistingChrome() : null;
+    if (!group || !cdp) return { closed: false };
+    const targetId = await getActiveTarget(cdp, group, { create: false });
+    if (!targetId) return { closed: false };
+    await cdp.send("Target.closeTarget", { targetId }, null, 10000);
+    targetOwners.delete(targetId);
+    group.targets.delete(targetId);
+    if (group.activeTargetId === targetId) {
+      group.activeTargetId = Array.from(group.targets).at(-1) || null;
+    }
+    return { closed: true };
+  }
+
+  if (request.method === "closeSession") {
+    const group = groups.get(caller.id);
+    if (!group) return { closed: 0 };
+    const cdp = await connectExistingChrome();
+    const previousChrome = chrome;
+    if (cdp) chrome = cdp;
+    const closed = await closeGroupTargets(group.id, "session closed by request");
+    if (!cdp) chrome = previousChrome;
+    return { closed };
+  }
+
+  const group = getGroup(caller.id);
+  watchGroupLeader(group, caller);
+  const cdp = await ensureChrome();
 
   if (request.method === "newTab") {
     const targetId = await createTab(cdp, group, params.url || "about:blank");
@@ -756,23 +807,6 @@ async function handleRequest(request) {
     });
     group.activeTargetId = targetId;
     return { targetId, url: params.url, newTab: !!params.newTab };
-  }
-
-  if (request.method === "close") {
-    const targetId = await getActiveTarget(cdp, group, { create: false });
-    if (!targetId) return { closed: false };
-    await cdp.send("Target.closeTarget", { targetId }, null, 10000);
-    targetOwners.delete(targetId);
-    group.targets.delete(targetId);
-    if (group.activeTargetId === targetId) {
-      group.activeTargetId = Array.from(group.targets).at(-1) || null;
-    }
-    return { closed: true };
-  }
-
-  if (request.method === "closeSession") {
-    const closed = await closeGroupTargets(group.id, "session closed by request");
-    return { closed };
   }
 
   if (request.method === "snapshot") {
@@ -825,20 +859,6 @@ async function handleRequest(request) {
       });
     }
     return { ref };
-  }
-
-  if (request.method === "listTabs") {
-    const pages = await listPages(cdp);
-    const tabs = pages
-      .filter((page) => group.targets.has(page.targetId))
-      .map((page, index) => ({
-        index: index + 1,
-        targetId: page.targetId,
-        title: page.title || "",
-        url: page.url || "",
-        active: page.targetId === group.activeTargetId,
-      }));
-    return { tabs };
   }
 
   if (request.method === "eval") {
