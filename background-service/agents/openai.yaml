@@ -1,0 +1,4 @@
+interface:
+  display_name: "Background Services"
+  short_description: "Manage repo-local background services"
+  default_prompt: "Use $background-services to create a repo-local service wrapper for my dev server."
