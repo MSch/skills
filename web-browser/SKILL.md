@@ -24,6 +24,7 @@ Chrome's internal CDP endpoint defaults to `127.0.0.1:19339`.
 ## Navigate
 
 ```bash
+./bin/agent-web open example.com
 ./bin/agent-web nav https://example.com
 ./bin/agent-web nav example.com
 ./bin/agent-web nav https://example.com --new
@@ -37,10 +38,33 @@ scheme default to `https://`.
 ```bash
 ./bin/agent-web status
 ./bin/agent-web daemon-status
+./bin/agent-web list-tabs
 ```
 
 Checks that the daemon is working and reports how many tabs this caller session owns.
 Use `daemon-status` for detailed daemon diagnostics.
+Use `list-tabs` to list only this caller session's tabs.
+
+## Snapshot And Actions
+
+```bash
+./bin/agent-web snapshot
+./bin/agent-web click @e2
+./bin/agent-web fill @e3 "test@example.com"
+./bin/agent-web get text @e1
+```
+
+`snapshot` prints an accessibility tree with refs. Refs are scoped to this caller
+session and are refreshed each time `snapshot` runs.
+
+Selectors are also supported:
+
+```bash
+./bin/agent-web click "#submit"
+./bin/agent-web fill "#email" "test@example.com"
+./bin/agent-web get value "#email"
+./bin/agent-web find role button click --name "Submit"
+```
 
 ## Evaluate JavaScript
 
@@ -56,6 +80,7 @@ Execute JavaScript in active tab (async context). Be careful with string escapin
 
 ```bash
 ./bin/agent-web screenshot
+./bin/agent-web screenshot page.png
 ./bin/agent-web screenshot --full-page
 ```
 
@@ -63,6 +88,14 @@ Takes a screenshot and returns a temp file path.
 
 - Default: current viewport
 - `--full-page`: captures full document height
+
+## Close
+
+```bash
+./bin/agent-web close
+```
+
+Closes this caller session's current tab.
 
 ## Pick Elements
 

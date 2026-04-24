@@ -45,6 +45,7 @@ function clearBrowserState() {
   for (const group of groups.values()) {
     group.targets.clear();
     group.activeTargetId = null;
+    group.refs.clear();
   }
 }
 
@@ -297,6 +298,7 @@ function getGroup(groupId) {
       id: groupId,
       targets: new Set(),
       activeTargetId: null,
+      refs: new Map(),
     });
   }
   return groups.get(groupId);
@@ -382,6 +384,204 @@ function serializeResult(result) {
   return String(result);
 }
 
+function axValue(value) {
+  if (!value || typeof value !== "object") return null;
+  return value.value ?? null;
+}
+
+function formatAxName(node) {
+  return axValue(node.name) || axValue(node.value) || "";
+}
+
+function interestingAxNode(node) {
+  if (!node || node.ignored || !node.backendDOMNodeId) return false;
+  const role = axValue(node.role);
+  const name = formatAxName(node);
+  return Boolean(role && role !== "generic" && role !== "none" && (name || role !== "StaticText"));
+}
+
+function buildSnapshot(axNodes, group) {
+  const byId = new Map(axNodes.map((node) => [node.nodeId, node]));
+  const childIds = new Set();
+  for (const node of axNodes) {
+    for (const childId of node.childIds || []) childIds.add(childId);
+  }
+
+  const roots = axNodes.filter((node) => !childIds.has(node.nodeId));
+  const refs = new Map();
+  const lines = [];
+  let nextRef = 1;
+
+  function visit(node, depth) {
+    if (!node) return;
+
+    let nextDepth = depth;
+    if (!node.ignored && interestingAxNode(node)) {
+      const ref = `@e${nextRef++}`;
+      const role = axValue(node.role) || "unknown";
+      const name = formatAxName(node);
+      refs.set(ref, {
+        ref,
+        backendDOMNodeId: node.backendDOMNodeId,
+        role,
+        name,
+      });
+      const label = name ? ` "${name.replace(/\s+/g, " ").trim()}"` : "";
+      lines.push(`${"  ".repeat(depth)}${ref} ${role}${label}`);
+      nextDepth = depth + 1;
+    }
+
+    for (const childId of node.childIds || []) {
+      visit(byId.get(childId), nextDepth);
+    }
+  }
+
+  for (const root of roots) visit(root, 0);
+  group.refs = refs;
+  return lines.join("\n");
+}
+
+function refInfo(group, locator) {
+  if (!locator?.startsWith("@")) return null;
+  const ref = locator.startsWith("@e") ? locator : `@${locator}`;
+  const info = group.refs.get(ref);
+  if (!info) {
+    throw new Error(`Unknown ref ${locator}; run snapshot first`);
+  }
+  return info;
+}
+
+async function objectIdForLocator(cdp, sessionId, group, locator) {
+  const info = refInfo(group, locator);
+  if (info) {
+    const { object } = await cdp.send(
+      "DOM.resolveNode",
+      { backendNodeId: info.backendDOMNodeId },
+      sessionId,
+      10000,
+    );
+    return object.objectId;
+  }
+
+  const result = await cdp.send(
+    "Runtime.evaluate",
+    {
+      expression: `document.querySelector(${JSON.stringify(locator)})`,
+      objectGroup: "agent-web",
+    },
+    sessionId,
+    10000,
+  );
+  if (!result.result?.objectId) throw new Error(`No element matches selector: ${locator}`);
+  return result.result.objectId;
+}
+
+async function backendNodeIdForLocator(cdp, sessionId, group, locator) {
+  const info = refInfo(group, locator);
+  if (info) return info.backendDOMNodeId;
+
+  const { root } = await cdp.send("DOM.getDocument", {}, sessionId, 10000);
+  const { nodeId } = await cdp.send(
+    "DOM.querySelector",
+    { nodeId: root.nodeId, selector: locator },
+    sessionId,
+    10000,
+  );
+  if (!nodeId) throw new Error(`No element matches selector: ${locator}`);
+  const { node } = await cdp.send("DOM.describeNode", { nodeId }, sessionId, 10000);
+  return node.backendNodeId;
+}
+
+async function clickLocator(cdp, sessionId, group, locator) {
+  const backendNodeId = await backendNodeIdForLocator(cdp, sessionId, group, locator);
+  const { model } = await cdp.send("DOM.getBoxModel", { backendNodeId }, sessionId, 10000);
+  if (!model?.content?.length) throw new Error(`Element has no clickable box: ${locator}`);
+  const xs = [model.content[0], model.content[2], model.content[4], model.content[6]];
+  const ys = [model.content[1], model.content[3], model.content[5], model.content[7]];
+  const x = (Math.min(...xs) + Math.max(...xs)) / 2;
+  const y = (Math.min(...ys) + Math.max(...ys)) / 2;
+
+  await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y }, sessionId, 10000);
+  await cdp.send(
+    "Input.dispatchMouseEvent",
+    { type: "mousePressed", x, y, button: "left", clickCount: 1 },
+    sessionId,
+    10000,
+  );
+  await cdp.send(
+    "Input.dispatchMouseEvent",
+    { type: "mouseReleased", x, y, button: "left", clickCount: 1 },
+    sessionId,
+    10000,
+  );
+}
+
+async function fillLocator(cdp, sessionId, group, locator, value) {
+  const objectId = await objectIdForLocator(cdp, sessionId, group, locator);
+  const result = await cdp.send(
+    "Runtime.callFunctionOn",
+    {
+      objectId,
+      arguments: [{ value }],
+      functionDeclaration: `function(value) {
+        const el = this;
+        el.focus();
+        if ("value" in el) {
+          el.value = value;
+        } else {
+          el.textContent = value;
+        }
+        el.dispatchEvent(new InputEvent("input", { bubbles: true, data: value, inputType: "insertText" }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      }`,
+    },
+    sessionId,
+    10000,
+  );
+  if (result.exceptionDetails) {
+    throw new Error(
+      result.exceptionDetails.exception?.description || result.exceptionDetails.text,
+    );
+  }
+}
+
+async function getLocator(cdp, sessionId, group, locator, property) {
+  const objectId = await objectIdForLocator(cdp, sessionId, group, locator);
+  const result = await cdp.send(
+    "Runtime.callFunctionOn",
+    {
+      objectId,
+      arguments: [{ value: property }],
+      functionDeclaration: `function(property) {
+        if (property === "text") return this.textContent || "";
+        if (property === "value") return "value" in this ? this.value : "";
+        if (property === "html") return this.outerHTML || "";
+        if (property?.startsWith("attr:")) return this.getAttribute(property.slice(5));
+        return this[property] ?? this.getAttribute(property) ?? "";
+      }`,
+      returnByValue: true,
+    },
+    sessionId,
+    10000,
+  );
+  if (result.exceptionDetails) {
+    throw new Error(
+      result.exceptionDetails.exception?.description || result.exceptionDetails.text,
+    );
+  }
+  return result.result?.value ?? "";
+}
+
+function findRef(group, { role, name }) {
+  const normalizedName = name?.toLowerCase();
+  for (const info of group.refs.values()) {
+    if (role && info.role.toLowerCase() !== role.toLowerCase()) continue;
+    if (normalizedName && !info.name.toLowerCase().includes(normalizedName)) continue;
+    return info.ref;
+  }
+  return null;
+}
+
 function armIdleTimer() {
   if (idleTimer) clearTimeout(idleTimer);
   if (!Number.isFinite(IDLE_TIMEOUT_MS) || IDLE_TIMEOUT_MS <= 0) return;
@@ -440,6 +640,84 @@ async function handleRequest(request) {
     });
     group.activeTargetId = targetId;
     return { targetId, url: params.url, newTab: !!params.newTab };
+  }
+
+  if (request.method === "close") {
+    const targetId = await getActiveTarget(cdp, group, { create: false });
+    if (!targetId) return { closed: false };
+    await cdp.send("Target.closeTarget", { targetId }, null, 10000);
+    targetOwners.delete(targetId);
+    group.targets.delete(targetId);
+    if (group.activeTargetId === targetId) {
+      group.activeTargetId = Array.from(group.targets).at(-1) || null;
+    }
+    return { closed: true };
+  }
+
+  if (request.method === "snapshot") {
+    const targetId = await getActiveTarget(cdp, group);
+    const text = await withSession(cdp, targetId, async (sessionId) => {
+      const { nodes } = await cdp.send("Accessibility.getFullAXTree", {}, sessionId, 20000);
+      return buildSnapshot(nodes, group);
+    });
+    return { text };
+  }
+
+  if (request.method === "click") {
+    const targetId = await getActiveTarget(cdp, group);
+    await withSession(cdp, targetId, async (sessionId) => {
+      await clickLocator(cdp, sessionId, group, params.locator);
+    });
+    return { clicked: true };
+  }
+
+  if (request.method === "fill") {
+    const targetId = await getActiveTarget(cdp, group);
+    await withSession(cdp, targetId, async (sessionId) => {
+      await fillLocator(cdp, sessionId, group, params.locator, params.value || "");
+    });
+    return { filled: true };
+  }
+
+  if (request.method === "get") {
+    const targetId = await getActiveTarget(cdp, group);
+    const value = await withSession(cdp, targetId, async (sessionId) => {
+      return getLocator(cdp, sessionId, group, params.locator, params.property || "text");
+    });
+    return { value };
+  }
+
+  if (request.method === "find") {
+    if (group.refs.size === 0) {
+      const targetId = await getActiveTarget(cdp, group);
+      await withSession(cdp, targetId, async (sessionId) => {
+        const { nodes } = await cdp.send("Accessibility.getFullAXTree", {}, sessionId, 20000);
+        buildSnapshot(nodes, group);
+      });
+    }
+    const ref = findRef(group, params);
+    if (!ref) throw new Error("No matching element found");
+    if (params.action === "click") {
+      const targetId = await getActiveTarget(cdp, group);
+      await withSession(cdp, targetId, async (sessionId) => {
+        await clickLocator(cdp, sessionId, group, ref);
+      });
+    }
+    return { ref };
+  }
+
+  if (request.method === "listTabs") {
+    const pages = await listPages(cdp);
+    const tabs = pages
+      .filter((page) => group.targets.has(page.targetId))
+      .map((page, index) => ({
+        index: index + 1,
+        targetId: page.targetId,
+        title: page.title || "",
+        url: page.url || "",
+        active: page.targetId === group.activeTargetId,
+      }));
+    return { tabs };
   }
 
   if (request.method === "eval") {

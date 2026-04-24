@@ -14,9 +14,17 @@ function usage() {
   console.log("Usage: agent-web <command> [args]");
   console.log("");
   console.log("Commands:");
+  console.log("  open <url> [--new]");
   console.log("  nav <url> [--new]");
+  console.log("  snapshot");
+  console.log("  click <ref|selector>");
+  console.log("  fill <ref|selector> <value>");
+  console.log("  get <property> <ref|selector>");
+  console.log("  find role <role> <action> [--name <name>]");
+  console.log("  list-tabs");
   console.log("  eval <javascript>");
-  console.log("  screenshot [--full-page]");
+  console.log("  screenshot [path] [--full-page]");
+  console.log("  close");
   console.log("  pick <message>");
   console.log("  dismiss-cookies [--reject]");
   console.log("  status");
@@ -59,7 +67,7 @@ async function main() {
     return;
   }
 
-  if (command === "nav") {
+  if (command === "nav" || command === "open") {
     const rawUrl = args.find((arg) => !arg.startsWith("--"));
     const newTab = args.includes("--new");
     if (!rawUrl) {
@@ -69,6 +77,80 @@ async function main() {
     const url = normalizeUrl(rawUrl);
     await callDaemon("nav", { url, newTab });
     console.log(newTab ? "✓ Opened:" : "✓ Navigated to:", url);
+    return;
+  }
+
+  if (command === "snapshot") {
+    if (args.length > 0) {
+      console.error("Usage: agent-web snapshot");
+      process.exit(1);
+    }
+    const result = await callDaemon("snapshot", {}, { timeout: 30000 });
+    printValue(result.text);
+    return;
+  }
+
+  if (command === "click") {
+    const locator = args[0];
+    if (!locator) {
+      console.error("Usage: agent-web click <ref|selector>");
+      process.exit(1);
+    }
+    await callDaemon("click", { locator }, { timeout: 30000 });
+    console.log(`✓ Clicked ${locator}`);
+    return;
+  }
+
+  if (command === "fill") {
+    const [locator, ...valueParts] = args;
+    if (!locator || valueParts.length === 0) {
+      console.error("Usage: agent-web fill <ref|selector> <value>");
+      process.exit(1);
+    }
+    const value = valueParts.join(" ");
+    await callDaemon("fill", { locator, value }, { timeout: 30000 });
+    console.log(`✓ Filled ${locator}`);
+    return;
+  }
+
+  if (command === "get") {
+    const [property, locator] = args;
+    if (!property || !locator) {
+      console.error("Usage: agent-web get <property> <ref|selector>");
+      process.exit(1);
+    }
+    const result = await callDaemon("get", { property, locator }, { timeout: 30000 });
+    console.log(result.value);
+    return;
+  }
+
+  if (command === "find") {
+    const [kind, role, action, ...rest] = args;
+    if (kind !== "role" || !role || !action) {
+      console.error('Usage: agent-web find role <role> <action> [--name <name>]');
+      process.exit(1);
+    }
+    const nameIndex = rest.indexOf("--name");
+    const name = nameIndex === -1 ? null : rest.slice(nameIndex + 1).join(" ");
+    const result = await callDaemon("find", { role, action, name }, { timeout: 30000 });
+    if (action === "click") {
+      console.log(`✓ Clicked ${result.ref}`);
+    } else {
+      console.log(result.ref);
+    }
+    return;
+  }
+
+  if (command === "list-tabs") {
+    const result = await callDaemon("listTabs", {}, { timeout: 10000 });
+    if (result.tabs.length === 0) {
+      console.log("No tabs");
+      return;
+    }
+    for (const tab of result.tabs) {
+      const marker = tab.active ? "*" : " ";
+      console.log(`${marker} ${tab.index}: ${tab.title || "(untitled)"} ${tab.url}`);
+    }
     return;
   }
 
@@ -84,17 +166,24 @@ async function main() {
   }
 
   if (command === "screenshot") {
-    const unknown = args.filter((arg) => arg !== "--full-page");
+    const filepathArg = args.find((arg) => !arg.startsWith("--"));
+    const unknown = args.filter((arg) => arg !== "--full-page" && arg !== filepathArg);
     if (unknown.length > 0) {
       console.error(`✗ Unknown argument: ${unknown[0]}`);
-      console.error("Usage: agent-web screenshot [--full-page]");
+      console.error("Usage: agent-web screenshot [path] [--full-page]");
       process.exit(1);
     }
     const result = await callDaemon("screenshot", { fullPage: args.includes("--full-page") });
-    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const filepath = join(tmpdir(), `screenshot-${timestamp}.png`);
+    const filepath =
+      filepathArg || join(tmpdir(), `screenshot-${new Date().toISOString().replace(/[:.]/g, "-")}.png`);
     writeFileSync(filepath, Buffer.from(result.data, "base64"));
     console.log(filepath);
+    return;
+  }
+
+  if (command === "close") {
+    const result = await callDaemon("close", {}, { timeout: 30000 });
+    console.log(result.closed ? "✓ Closed current tab" : "○ No tab to close");
     return;
   }
 
