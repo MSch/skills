@@ -14,6 +14,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { connect as connectChrome } from "../lib/chrome-cdp.js";
 import { identifyGroupLeader } from "../lib/process-group.js";
+import { pidfdUnavailableReason, watchPidExit } from "../lib/pidfd-watch.js";
 import { collectFrames } from "../lib/page-scripts.js";
 
 const DEBUG = process.env.DEBUG === "1";
@@ -35,6 +36,7 @@ let idleTimer = null;
 const groups = new Map();
 const targetOwners = new Map();
 const attachedSessions = new Map();
+let pidfdWarningLogged = false;
 
 function clearBrowserState() {
   chrome = null;
@@ -299,9 +301,84 @@ function getGroup(groupId) {
       targets: new Set(),
       activeTargetId: null,
       refs: new Map(),
+      leaderPid: null,
+      watcher: null,
     });
   }
   return groups.get(groupId);
+}
+
+async function closeGroupTargets(groupId, reason) {
+  const group = groups.get(groupId);
+  if (!group) return;
+
+  if (group.watcher) {
+    try {
+      group.watcher.close();
+    } catch {
+      // ignore
+    }
+    group.watcher = null;
+  }
+
+  const targetIds = Array.from(group.targets);
+  for (const targetId of targetIds) targetOwners.delete(targetId);
+  group.targets.clear();
+  group.activeTargetId = null;
+  group.refs.clear();
+  groups.delete(groupId);
+
+  if (targetIds.length === 0 || !chrome?.isOpen()) return;
+  log(`closing ${targetIds.length} target(s) for ${groupId}: ${reason}`);
+
+  await Promise.allSettled(
+    targetIds.map(async (targetId) => {
+      try {
+        await chrome.send("Target.closeTarget", { targetId }, null, 10000);
+      } catch (e) {
+        log("failed to close target", targetId, e.message);
+      }
+    }),
+  );
+}
+
+function watchGroupLeader(group, caller) {
+  const leaderPid = caller.leader?.pid;
+  if (!leaderPid || group.leaderPid === leaderPid) return;
+
+  if (group.watcher) {
+    try {
+      group.watcher.close();
+    } catch {
+      // ignore
+    }
+    group.watcher = null;
+  }
+
+  let watcher;
+  try {
+    watcher = watchPidExit(leaderPid, (error) => {
+      if (error) {
+        log(`pidfd watcher for ${group.id} failed: ${error.message}`);
+        return;
+      }
+      void closeGroupTargets(group.id, `leader pid ${leaderPid} exited`);
+    });
+  } catch (e) {
+    log(`process-exit tab cleanup disabled for ${group.id}: ${e.message}`);
+    return;
+  }
+
+  if (!watcher) {
+    if (!pidfdWarningLogged) {
+      pidfdWarningLogged = true;
+      log(`process-exit tab cleanup disabled: ${pidfdUnavailableReason()}`);
+    }
+    return;
+  }
+
+  group.leaderPid = leaderPid;
+  group.watcher = watcher;
 }
 
 async function listPages(cdp) {
@@ -599,6 +676,7 @@ async function handleRequest(request) {
   const caller = identifyGroupLeader(request.callerPid || process.ppid);
   const cdp = await ensureChrome();
   const group = getGroup(caller.id);
+  watchGroupLeader(group, caller);
   const params = request.params || {};
 
   if (request.method === "status") {

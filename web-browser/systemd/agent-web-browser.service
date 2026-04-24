@@ -2,7 +2,7 @@
 Description=Agent Web Browser daemon
 
 [Service]
-ExecStart=/bin/sh -lc 'unit="$(readlink -f "$(systemctl --user show -P FragmentPath agent-web-browser.service)")"; root="$(dirname "$(dirname "$unit")")"; cd "$root" && exec /usr/bin/mise exec -- node daemon/browserd.js'
+ExecStart=/bin/sh -lc 'unit="$(readlink -f "$(systemctl --user show -P FragmentPath agent-web-browser.service)")"; root="$(dirname "$(dirname "$unit")")"; cd "$root" && /usr/bin/mise exec -- node scripts/ensure-native.js && exec /usr/bin/mise exec -- node daemon/browserd.js'
 Environment=AGENT_WEB_CHROME_CDP_PORT=19339
 Environment=AGENT_WEB_IDLE_TIMEOUT_MS=600000
 NoNewPrivileges=yes
