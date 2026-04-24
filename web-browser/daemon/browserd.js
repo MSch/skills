@@ -250,7 +250,6 @@ async function startChrome() {
       "--no-first-run",
       "--no-default-browser-check",
       "--disable-features=ProfilePicker",
-      "--enable-automation",
     ],
     { env: chromeEnv(), stdio: "ignore" },
   );
