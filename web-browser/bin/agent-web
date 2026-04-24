@@ -25,6 +25,7 @@ function usage() {
   console.log("  eval <javascript>");
   console.log("  screenshot [path] [--full-page]");
   console.log("  close");
+  console.log("  close-session");
   console.log("  pick <message>");
   console.log("  dismiss-cookies [--reject]");
   console.log("  status");
@@ -42,6 +43,23 @@ function normalizeUrl(value) {
     return value;
   }
   return `https://${value}`;
+}
+
+function formatTable(rows, columns) {
+  const widths = columns.map((column) =>
+    Math.max(
+      column.label.length,
+      ...rows.map((row) => String(row[column.key] ?? "").length),
+    ),
+  );
+  const formatRow = (row) =>
+    columns
+      .map((column, index) => String(row[column.key] ?? "").padEnd(widths[index]))
+      .join("  ");
+
+  console.log(formatRow(Object.fromEntries(columns.map((column) => [column.key, column.label]))));
+  console.log(widths.map((width) => "-".repeat(width)).join("  "));
+  for (const row of rows) console.log(formatRow(row));
 }
 
 async function main() {
@@ -63,7 +81,30 @@ async function main() {
 
   if (command === "daemon-status") {
     const status = await callDaemon("daemonStatus", {}, { timeout: 10000 });
-    console.log(JSON.stringify(status, null, 2));
+    console.log(`socket: ok`);
+    console.log(`chrome: ${status.chromeUp ? "up" : "down"}${status.chromeConnected ? " (connected)" : ""}`);
+    console.log(`chromePort: ${status.chromePort}`);
+    console.log(`profile: ${status.profileDir}`);
+    console.log(`caller: ${status.caller.id}`);
+    console.log("");
+    if (status.clients.length === 0) {
+      console.log("No tracked clients");
+    } else {
+      formatTable(
+        status.clients.map((client) => ({
+          client: client.id,
+          pid: client.leaderPid || "",
+          tabs: client.tabs,
+          active: client.activeTargetId || "",
+        })),
+        [
+          { key: "client", label: "CLIENT" },
+          { key: "pid", label: "PID" },
+          { key: "tabs", label: "TABS" },
+          { key: "active", label: "ACTIVE_TARGET" },
+        ],
+      );
+    }
     return;
   }
 
@@ -184,6 +225,16 @@ async function main() {
   if (command === "close") {
     const result = await callDaemon("close", {}, { timeout: 30000 });
     console.log(result.closed ? "✓ Closed current tab" : "○ No tab to close");
+    return;
+  }
+
+  if (command === "close-session") {
+    const result = await callDaemon("closeSession", {}, { timeout: 30000 });
+    console.log(
+      result.closed > 0
+        ? `✓ Closed ${result.closed} session tab${result.closed === 1 ? "" : "s"}`
+        : "○ No tabs to close",
+    );
     return;
   }
 

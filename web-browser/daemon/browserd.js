@@ -328,7 +328,7 @@ async function closeGroupTargets(groupId, reason) {
   group.refs.clear();
   groups.delete(groupId);
 
-  if (targetIds.length === 0 || !chrome?.isOpen()) return;
+  if (targetIds.length === 0 || !chrome?.isOpen()) return targetIds.length;
   log(`closing ${targetIds.length} target(s) for ${groupId}: ${reason}`);
 
   await Promise.allSettled(
@@ -340,6 +340,7 @@ async function closeGroupTargets(groupId, reason) {
       }
     }),
   );
+  return targetIds.length;
 }
 
 function watchGroupLeader(group, caller) {
@@ -674,10 +675,27 @@ function armIdleTimer() {
 async function handleRequest(request) {
   armIdleTimer();
   const caller = identifyGroupLeader(request.callerPid || process.ppid);
-  const cdp = await ensureChrome();
+  const params = request.params || {};
+
+  if (request.method === "daemonStatus") {
+    return {
+      chromePort: CHROME_PORT,
+      profileDir: PROFILE_DIR,
+      chromeConnected: !!chrome?.isOpen(),
+      chromeUp: await isChromeUp(),
+      caller,
+      clients: Array.from(groups.values()).map((group) => ({
+        id: group.id,
+        leaderPid: group.leaderPid,
+        tabs: group.targets.size,
+        activeTargetId: group.activeTargetId,
+      })),
+    };
+  }
+
   const group = getGroup(caller.id);
   watchGroupLeader(group, caller);
-  const params = request.params || {};
+  const cdp = await ensureChrome();
 
   if (request.method === "status") {
     const pages = await listPages(cdp);
@@ -689,16 +707,6 @@ async function handleRequest(request) {
       session: caller.id,
       tabs: ownedPages.length,
       activeUrl: activePage?.url || null,
-    };
-  }
-
-  if (request.method === "daemonStatus") {
-    return {
-      chromePort: CHROME_PORT,
-      profileDir: PROFILE_DIR,
-      group: caller,
-      targets: Array.from(group.targets),
-      activeTargetId: group.activeTargetId,
     };
   }
 
@@ -730,6 +738,11 @@ async function handleRequest(request) {
       group.activeTargetId = Array.from(group.targets).at(-1) || null;
     }
     return { closed: true };
+  }
+
+  if (request.method === "closeSession") {
+    const closed = await closeGroupTargets(group.id, "session closed by request");
+    return { closed };
   }
 
   if (request.method === "snapshot") {

@@ -93,9 +93,11 @@ Takes a screenshot and returns a temp file path.
 
 ```bash
 ./bin/agent-web close
+./bin/agent-web close-session
 ```
 
 Closes this caller session's current tab.
+Use `close-session` to close all tabs owned by this caller session.
 
 ## Pick Elements
 
