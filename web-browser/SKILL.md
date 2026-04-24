@@ -27,13 +27,63 @@ scheme default to `https://`.
 
 ```bash
 ./bin/agent-web snapshot
+./bin/agent-web snapshot --role button
+./bin/agent-web snapshot --name Submit
+./bin/agent-web snapshot --text billing
+./bin/agent-web snapshot --role link --name docs
+./bin/agent-web snapshot --limit 80
 ./bin/agent-web click @e2
 ./bin/agent-web fill @e3 "test@example.com"
 ./bin/agent-web get text @e1
 ```
 
 `snapshot` prints an accessibility tree with refs. Refs are scoped to this caller
-session and are refreshed each time `snapshot` runs.
+session. Each snapshot refreshes the live ref map, keeps refs stable for
+surviving backend DOM nodes, allocates new refs for new nodes, and drops refs
+for nodes that no longer exist. Navigating to a different document, changing
+the active page URL, or switching tabs invalidates the previous ref map; take a
+new snapshot before using refs on the new page.
+
+Snapshot output can be filtered when pages produce long accessibility trees:
+
+```bash
+./bin/agent-web snapshot --interactive
+./bin/agent-web snapshot --headings
+./bin/agent-web snapshot --links
+./bin/agent-web snapshot --forms
+```
+
+`--role <role>` matches an exact accessibility role, case-insensitively.
+`--name <text>` matches accessible names. `--text <text>` matches the role plus
+accessible name. `--limit <n>` limits matched entries before context expansion.
+
+Preset filters are role groups:
+
+- `--interactive`: buttons, links, tabs, menu items, options, and form controls.
+- `--headings`: headings.
+- `--links`: links.
+- `--forms`: buttons and form controls.
+
+Use `--context <n>` with a filter to include matching nodes plus up to `n`
+visible ancestor levels and `n` visible descendant levels:
+
+```bash
+./bin/agent-web snapshot --name checkout --context 2
+```
+
+Use `--within <ref|selector>` to print only the accessibility subtree under an
+existing ref or CSS selector:
+
+```bash
+./bin/agent-web snapshot --within @e14
+./bin/agent-web snapshot --within "#settings-modal"
+./bin/agent-web snapshot --within "#settings-modal" --interactive
+```
+
+Filtered snapshots still reconcile the full ref map for the caller session
+before printing. Printed refs may skip numbers because hidden nodes also keep
+their refs, and hidden refs from the same snapshot can still be used by later
+`click`, `fill`, `get`, and `find` commands.
 
 Selectors are also supported:
 

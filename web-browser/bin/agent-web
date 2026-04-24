@@ -16,7 +16,9 @@ function usage() {
   console.log("Commands:");
   console.log("  open <url> [--new]");
   console.log("  nav <url> [--new]");
-  console.log("  snapshot");
+  console.log("  snapshot [--role <role>] [--name <text>] [--text <text>] [--limit <n>]");
+  console.log("           [--interactive|--headings|--links|--forms] [--context <n>]");
+  console.log("           [--within <ref|selector>]");
   console.log("  click <ref|selector>");
   console.log("  fill <ref|selector> <value>");
   console.log("  get <property> <ref|selector>");
@@ -74,6 +76,54 @@ function parseJsonParams(value) {
   } catch (e) {
     throw new Error(`invalid JSON params: ${e.message}`);
   }
+}
+
+function parseNonNegativeInteger(value, option) {
+  if (!/^\d+$/.test(value || "")) {
+    throw new Error(`${option} must be a non-negative integer`);
+  }
+  return Number(value);
+}
+
+function parseSnapshotArgs(args) {
+  const params = {};
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    const readValue = () => {
+      const value = args[++i];
+      if (value === undefined || value.startsWith("--")) {
+        throw new Error(`${arg} requires a value`);
+      }
+      return value;
+    };
+
+    if (arg === "--role") {
+      params.role = readValue();
+    } else if (arg === "--name") {
+      params.name = readValue();
+    } else if (arg === "--text") {
+      params.text = readValue();
+    } else if (arg === "--limit") {
+      params.limit = parseNonNegativeInteger(readValue(), "--limit");
+    } else if (arg === "--context") {
+      params.context = parseNonNegativeInteger(readValue(), "--context");
+    } else if (arg === "--within") {
+      params.within = readValue();
+    } else if (arg === "--interactive") {
+      params.preset = "interactive";
+    } else if (arg === "--headings") {
+      params.preset = "headings";
+    } else if (arg === "--links") {
+      params.preset = "links";
+    } else if (arg === "--forms") {
+      params.preset = "forms";
+    } else {
+      throw new Error(`Unknown snapshot argument: ${arg}`);
+    }
+  }
+
+  return params;
 }
 
 async function main() {
@@ -136,11 +186,17 @@ async function main() {
   }
 
   if (command === "snapshot") {
-    if (args.length > 0) {
-      console.error("Usage: agent-web snapshot");
+    let params;
+    try {
+      params = parseSnapshotArgs(args);
+    } catch (e) {
+      console.error(`✗ ${e.message}`);
+      console.error("Usage: agent-web snapshot [--role <role>] [--name <text>] [--text <text>] [--limit <n>]");
+      console.error("                          [--interactive|--headings|--links|--forms] [--context <n>]");
+      console.error("                          [--within <ref|selector>]");
       process.exit(1);
     }
-    const result = await callDaemon("snapshot", {}, { timeout: 30000 });
+    const result = await callDaemon("snapshot", params, { timeout: 30000 });
     printValue(result.text);
     return;
   }

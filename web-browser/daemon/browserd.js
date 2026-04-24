@@ -39,6 +39,12 @@ const targetOwners = new Map();
 const attachedSessions = new Map();
 let pidfdWarningLogged = false;
 
+function resetGroupRefs(group) {
+  group.refs.clear();
+  group.nextRef = 1;
+  group.refContext = null;
+}
+
 function clearBrowserState() {
   chrome = null;
   chromeConnecting = null;
@@ -48,7 +54,7 @@ function clearBrowserState() {
   for (const group of groups.values()) {
     group.targets.clear();
     group.activeTargetId = null;
-    group.refs.clear();
+    resetGroupRefs(group);
   }
 }
 
@@ -337,6 +343,8 @@ function getGroup(groupId) {
       targets: new Set(),
       activeTargetId: null,
       refs: new Map(),
+      nextRef: 1,
+      refContext: null,
       leaderPid: null,
       watcher: null,
     });
@@ -361,7 +369,7 @@ async function closeGroupTargets(groupId, reason) {
   for (const targetId of targetIds) targetOwners.delete(targetId);
   group.targets.clear();
   group.activeTargetId = null;
-  group.refs.clear();
+  resetGroupRefs(group);
   groups.delete(groupId);
 
   if (targetIds.length === 0 || !chrome?.isOpen()) return targetIds.length;
@@ -444,6 +452,7 @@ async function createTab(cdp, group, url = "about:blank") {
   targetOwners.set(targetId, group.id);
   group.targets.add(targetId);
   group.activeTargetId = targetId;
+  resetGroupRefs(group);
   return targetId;
 }
 
@@ -453,6 +462,7 @@ async function getActiveTarget(cdp, group, { create = true } = {}) {
   }
   const fallback = Array.from(group.targets).at(-1);
   if (fallback) {
+    if (group.activeTargetId !== fallback) resetGroupRefs(group);
     group.activeTargetId = fallback;
     return fallback;
   }
@@ -478,6 +488,33 @@ async function withSession(cdp, targetId, callback) {
       // Target may have gone away.
     }
   }
+}
+
+async function currentRefContext(cdp, sessionId, targetId) {
+  const { frameTree } = await cdp.send("Page.getFrameTree", {}, sessionId, 10000);
+  const frame = frameTree?.frame || {};
+  const documentKey = `${frame.loaderId || ""}\0${frame.url || ""}`;
+  return {
+    targetId,
+    documentKey,
+  };
+}
+
+function sameRefContext(left, right) {
+  return Boolean(
+    left &&
+    right &&
+    left.targetId === right.targetId &&
+    left.documentKey === right.documentKey,
+  );
+}
+
+async function ensureRefsCurrent(cdp, sessionId, group, targetId = group.activeTargetId) {
+  const refContext = await currentRefContext(cdp, sessionId, targetId);
+  if (group.refContext && !sameRefContext(group.refContext, refContext)) {
+    resetGroupRefs(group);
+  }
+  return refContext;
 }
 
 function serializeResult(result) {
@@ -514,7 +551,151 @@ function interestingAxNode(node) {
   return Boolean(role && role !== "generic" && role !== "none" && (name || role !== "StaticText"));
 }
 
-function buildSnapshot(axNodes, group) {
+const SNAPSHOT_PRESETS = {
+  forms: new Set([
+    "button",
+    "checkbox",
+    "combobox",
+    "listbox",
+    "menuitemcheckbox",
+    "menuitemradio",
+    "radio",
+    "searchbox",
+    "slider",
+    "spinbutton",
+    "switch",
+    "textbox",
+  ]),
+  headings: new Set(["heading"]),
+  interactive: new Set([
+    "button",
+    "checkbox",
+    "combobox",
+    "link",
+    "listbox",
+    "menuitem",
+    "menuitemcheckbox",
+    "menuitemradio",
+    "option",
+    "radio",
+    "searchbox",
+    "slider",
+    "spinbutton",
+    "switch",
+    "tab",
+    "textbox",
+  ]),
+  links: new Set(["link"]),
+};
+
+function normalizeFilterText(value) {
+  return String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function formatSnapshotLine(entry, depth) {
+  const label = entry.name ? ` "${entry.name.replace(/\s+/g, " ").trim()}"` : "";
+  return `${"  ".repeat(depth)}${entry.ref} ${entry.role}${label}`;
+}
+
+function addSnapshotContext(selected, entry, depth) {
+  if (depth <= 0) return;
+
+  let ancestor = entry.parent;
+  for (let i = 0; ancestor && i < depth; i++) {
+    selected.add(ancestor);
+    ancestor = ancestor.parent;
+  }
+
+  function addDescendants(node, remaining) {
+    if (remaining <= 0) return;
+    for (const child of node.children) {
+      selected.add(child);
+      addDescendants(child, remaining - 1);
+    }
+  }
+  addDescendants(entry, depth);
+}
+
+function snapshotPresetMatches(entry, preset) {
+  if (!preset) return true;
+  const roles = SNAPSHOT_PRESETS[preset];
+  return roles ? roles.has(entry.role.toLowerCase()) : true;
+}
+
+function snapshotEntryMatches(entry, filters) {
+  if (filters.role && entry.role.toLowerCase() !== String(filters.role).toLowerCase()) {
+    return false;
+  }
+  if (filters.name && !normalizeFilterText(entry.name).includes(normalizeFilterText(filters.name))) {
+    return false;
+  }
+  if (filters.text) {
+    const haystack = normalizeFilterText(`${entry.role} ${entry.name}`);
+    if (!haystack.includes(normalizeFilterText(filters.text))) return false;
+  }
+  return snapshotPresetMatches(entry, filters.preset);
+}
+
+function findAxSubtreeNodeId(axNodes, backendDOMNodeId) {
+  if (!backendDOMNodeId) return null;
+  return axNodes.find((node) => node.backendDOMNodeId === backendDOMNodeId)?.nodeId || null;
+}
+
+function descendantNodeIds(axNodes, rootNodeId) {
+  if (!rootNodeId) return null;
+  const byId = new Map(axNodes.map((node) => [node.nodeId, node]));
+  const ids = new Set();
+
+  function visit(nodeId) {
+    if (!nodeId || ids.has(nodeId)) return;
+    ids.add(nodeId);
+    for (const childId of byId.get(nodeId)?.childIds || []) visit(childId);
+  }
+
+  visit(rootNodeId);
+  return ids;
+}
+
+function refNumber(ref) {
+  const match = /^@e(\d+)$/.exec(ref);
+  return match ? Number(match[1]) : null;
+}
+
+function nextRefAfter(refs) {
+  let max = 0;
+  for (const ref of refs.keys()) {
+    const number = refNumber(ref);
+    if (number && number > max) max = number;
+  }
+  return max + 1;
+}
+
+function refsByBackendDOMNodeId(refs) {
+  const byBackendDOMNodeId = new Map();
+  for (const info of refs.values()) {
+    if (!info.backendDOMNodeId || byBackendDOMNodeId.has(info.backendDOMNodeId)) continue;
+    byBackendDOMNodeId.set(info.backendDOMNodeId, info);
+  }
+  return byBackendDOMNodeId;
+}
+
+function allocateSnapshotRef(group, usedRefs) {
+  let nextRef = Number.isInteger(group.nextRef)
+    ? group.nextRef
+    : nextRefAfter(group.refs);
+
+  let ref = `@e${nextRef}`;
+  while (usedRefs.has(ref)) {
+    nextRef++;
+    ref = `@e${nextRef}`;
+  }
+
+  group.nextRef = nextRef + 1;
+  usedRefs.add(ref);
+  return ref;
+}
+
+function buildSnapshot(axNodes, group, filters = {}) {
   const byId = new Map(axNodes.map((node) => [node.nodeId, node]));
   const childIds = new Set();
   for (const node of axNodes) {
@@ -522,37 +703,91 @@ function buildSnapshot(axNodes, group) {
   }
 
   const roots = axNodes.filter((node) => !childIds.has(node.nodeId));
+  const previousRefs = refsByBackendDOMNodeId(group.refs);
+  group.nextRef = Math.max(
+    Number.isInteger(group.nextRef) ? group.nextRef : 1,
+    nextRefAfter(group.refs),
+  );
+  const usedRefs = new Set();
   const refs = new Map();
-  const lines = [];
-  let nextRef = 1;
+  const entries = [];
 
-  function visit(node, depth) {
+  function visit(node, parent) {
     if (!node) return;
 
-    let nextDepth = depth;
+    let nextParent = parent;
     if (!node.ignored && interestingAxNode(node)) {
-      const ref = `@e${nextRef++}`;
+      const previousRef = previousRefs.get(node.backendDOMNodeId);
+      const ref = previousRef?.ref && !usedRefs.has(previousRef.ref)
+        ? previousRef.ref
+        : allocateSnapshotRef(group, usedRefs);
+      previousRefs.delete(node.backendDOMNodeId);
+      usedRefs.add(ref);
       const role = axValue(node.role) || "unknown";
-      const name = formatAxName(node);
+      const name = formatAxName(node).replace(/\s+/g, " ").trim();
+      const entry = {
+        ref,
+        backendDOMNodeId: node.backendDOMNodeId,
+        nodeId: node.nodeId,
+        role,
+        name,
+        parent,
+        children: [],
+      };
+      if (parent) parent.children.push(entry);
+      entries.push(entry);
       refs.set(ref, {
         ref,
         backendDOMNodeId: node.backendDOMNodeId,
         role,
         name,
       });
-      const label = name ? ` "${name.replace(/\s+/g, " ").trim()}"` : "";
-      lines.push(`${"  ".repeat(depth)}${ref} ${role}${label}`);
-      nextDepth = depth + 1;
+      nextParent = entry;
     }
 
     for (const childId of node.childIds || []) {
-      visit(byId.get(childId), nextDepth);
+      visit(byId.get(childId), nextParent);
     }
   }
 
-  for (const root of roots) visit(root, 0);
+  for (const root of roots) visit(root, null);
   group.refs = refs;
-  return lines.join("\n");
+  if (filters.refContext) group.refContext = filters.refContext;
+
+  const scopedNodeIds = filters.withinBackendDOMNodeId
+    ? descendantNodeIds(
+        axNodes,
+        findAxSubtreeNodeId(axNodes, filters.withinBackendDOMNodeId),
+      ) || new Set()
+    : null;
+  const scopeEntries = scopedNodeIds
+    ? entries.filter((entry) => scopedNodeIds.has(entry.nodeId))
+    : entries;
+
+  const hasFilter = Boolean(filters.role || filters.name || filters.text || filters.preset);
+  let matchedEntries = hasFilter
+    ? scopeEntries.filter((entry) => snapshotEntryMatches(entry, filters))
+    : scopeEntries;
+
+  if (filters.limit !== undefined) matchedEntries = matchedEntries.slice(0, filters.limit);
+
+  const selected = new Set(matchedEntries);
+  if (hasFilter) {
+    for (const entry of matchedEntries) addSnapshotContext(selected, entry, filters.context || 0);
+  }
+
+  const visibleEntries = entries.filter((entry) => selected.has(entry));
+  return visibleEntries
+    .map((entry) => {
+      let depth = 0;
+      let ancestor = entry.parent;
+      while (ancestor) {
+        if (selected.has(ancestor)) depth++;
+        ancestor = ancestor.parent;
+      }
+      return formatSnapshotLine(entry, depth);
+    })
+    .join("\n");
 }
 
 function refInfo(group, locator) {
@@ -566,6 +801,7 @@ function refInfo(group, locator) {
 }
 
 async function objectIdForLocator(cdp, sessionId, group, locator) {
+  if (locator?.startsWith("@")) await ensureRefsCurrent(cdp, sessionId, group);
   const info = refInfo(group, locator);
   if (info) {
     const { object } = await cdp.send(
@@ -591,6 +827,7 @@ async function objectIdForLocator(cdp, sessionId, group, locator) {
 }
 
 async function backendNodeIdForLocator(cdp, sessionId, group, locator) {
+  if (locator?.startsWith("@")) await ensureRefsCurrent(cdp, sessionId, group);
   const info = refInfo(group, locator);
   if (info) return info.backendDOMNodeId;
 
@@ -806,14 +1043,23 @@ async function handleRequest(request) {
       await cdp.navigate(sessionId, params.url, 30000);
     });
     group.activeTargetId = targetId;
+    resetGroupRefs(group);
     return { targetId, url: params.url, newTab: !!params.newTab };
   }
 
   if (request.method === "snapshot") {
     const targetId = await getActiveTarget(cdp, group);
     const text = await withSession(cdp, targetId, async (sessionId) => {
+      const refContext = await ensureRefsCurrent(cdp, sessionId, group, targetId);
+      const withinBackendDOMNodeId = params.within
+        ? await backendNodeIdForLocator(cdp, sessionId, group, params.within)
+        : null;
       const { nodes } = await cdp.send("Accessibility.getFullAXTree", {}, sessionId, 20000);
-      return buildSnapshot(nodes, group);
+      return buildSnapshot(nodes, group, {
+        ...params,
+        refContext,
+        withinBackendDOMNodeId,
+      });
     });
     return { text };
   }
@@ -843,13 +1089,14 @@ async function handleRequest(request) {
   }
 
   if (request.method === "find") {
-    if (group.refs.size === 0) {
-      const targetId = await getActiveTarget(cdp, group);
-      await withSession(cdp, targetId, async (sessionId) => {
+    const targetId = await getActiveTarget(cdp, group);
+    await withSession(cdp, targetId, async (sessionId) => {
+      const refContext = await ensureRefsCurrent(cdp, sessionId, group, targetId);
+      if (group.refs.size === 0) {
         const { nodes } = await cdp.send("Accessibility.getFullAXTree", {}, sessionId, 20000);
-        buildSnapshot(nodes, group);
-      });
-    }
+        buildSnapshot(nodes, group, { refContext });
+      }
+    });
     const ref = findRef(group, params);
     if (!ref) throw new Error("No matching element found");
     if (params.action === "click") {
