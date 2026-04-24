@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { callDaemon } from "../lib/daemon-rpc.js";
@@ -23,6 +23,9 @@ function usage() {
   console.log("  find role <role> <action> [--name <name>]");
   console.log("  list-tabs");
   console.log("  eval <javascript>");
+  console.log("  cdp <Domain.method> [json-params]");
+  console.log("  cdp browser <Domain.method> [json-params]");
+  console.log("  cdp target <targetId> <Domain.method> [json-params]");
   console.log("  screenshot [path] [--full-page]");
   console.log("  close");
   console.log("  close-session");
@@ -60,6 +63,17 @@ function formatTable(rows, columns) {
   console.log(formatRow(Object.fromEntries(columns.map((column) => [column.key, column.label]))));
   console.log(widths.map((width) => "-".repeat(width)).join("  "));
   for (const row of rows) console.log(formatRow(row));
+}
+
+function parseJsonParams(value) {
+  if (value === undefined) return {};
+  const text = value === "-" ? readFileSync(0, "utf8") : value;
+  if (text.trim() === "") return {};
+  try {
+    return JSON.parse(text);
+  } catch (e) {
+    throw new Error(`invalid JSON params: ${e.message}`);
+  }
 }
 
 async function main() {
@@ -203,6 +217,55 @@ async function main() {
     }
     const result = await callDaemon("eval", { code });
     printValue(result.formatted);
+    return;
+  }
+
+  if (command === "cdp") {
+    let scope = "active";
+    let targetId = null;
+    let method;
+    let jsonParams;
+
+    if (args[0] === "browser") {
+      scope = "browser";
+      method = args[1];
+      jsonParams = args[2];
+    } else if (args[0] === "target") {
+      scope = "target";
+      targetId = args[1];
+      method = args[2];
+      jsonParams = args[3];
+    } else {
+      method = args[0];
+      jsonParams = args[1];
+    }
+
+    if (!method || (scope === "target" && !targetId)) {
+      console.error("Usage: agent-web cdp <Domain.method> [json-params]");
+      console.error("       agent-web cdp browser <Domain.method> [json-params]");
+      console.error("       agent-web cdp target <targetId> <Domain.method> [json-params]");
+      process.exit(1);
+    }
+
+    const unknown = args.slice(
+      scope === "browser" ? 3 : scope === "target" ? 4 : 2,
+    );
+    if (unknown.length > 0) {
+      console.error(`✗ Unknown argument: ${unknown[0]}`);
+      process.exit(1);
+    }
+
+    const result = await callDaemon(
+      "rawCdp",
+      {
+        scope,
+        targetId,
+        method,
+        params: parseJsonParams(jsonParams),
+      },
+      { timeout: 30000 },
+    );
+    console.log(JSON.stringify(result.result, null, 2));
     return;
   }
 

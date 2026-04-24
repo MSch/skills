@@ -850,6 +850,34 @@ async function handleRequest(request) {
     return { value, formatted: serializeResult(value) };
   }
 
+  if (request.method === "rawCdp") {
+    const cdpParams = params.params || {};
+    if (!params.method || typeof params.method !== "string") {
+      throw new Error("CDP method is required");
+    }
+    if (typeof cdpParams !== "object" || Array.isArray(cdpParams)) {
+      throw new Error("CDP params must be a JSON object");
+    }
+
+    if (params.scope === "browser") {
+      return { result: await cdp.send(params.method, cdpParams, null, params.timeout || 30000) };
+    }
+
+    const targetId =
+      params.scope === "target"
+        ? params.targetId
+        : await getActiveTarget(cdp, group);
+    if (!targetId) throw new Error("No target selected");
+    if (!group.targets.has(targetId)) {
+      throw new Error("Target is not owned by this session");
+    }
+
+    const result = await withSession(cdp, targetId, async (sessionId) => {
+      return cdp.send(params.method, cdpParams, sessionId, params.timeout || 30000);
+    });
+    return { result };
+  }
+
   if (request.method === "pick") {
     const targetId = await getActiveTarget(cdp, group);
     const value = await withSession(cdp, targetId, async (sessionId) => {

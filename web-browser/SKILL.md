@@ -1,6 +1,6 @@
 ---
 name: web-browser
-description: "Allows interacting with web pages by navigating, evaluating JavaScript, taking screenshots, picking elements, and dismissing cookie dialogs. When the agent needs to browse the web, it can use this skill to do so."
+description: "Allows interacting with web pages by navigating, evaluating JavaScript, sending raw CDP commands, taking screenshots, picking elements, and dismissing cookie dialogs. When the agent needs to browse the web, it can use this skill to do so."
 license: Stolen from Mario
 ---
 
@@ -75,6 +75,45 @@ Selectors are also supported:
 ```
 
 Execute JavaScript in active tab (async context). Be careful with string escaping, best to use single quotes.
+
+## Raw CDP
+
+```bash
+./bin/agent-web cdp <Domain.method> [json-params]
+./bin/agent-web cdp browser <Domain.method> [json-params]
+./bin/agent-web cdp target <targetId> <Domain.method> [json-params]
+```
+
+Send a raw Chrome DevTools Protocol command. By default, commands run against
+this caller session's active tab:
+
+```bash
+./bin/agent-web cdp Runtime.evaluate '{"expression":"document.title","returnByValue":true}'
+./bin/agent-web cdp Page.getLayoutMetrics
+```
+
+Use `browser` for browser-level CDP commands:
+
+```bash
+./bin/agent-web cdp browser Browser.getVersion
+```
+
+Use `target` to send a command to a specific tab owned by this caller session:
+
+```bash
+./bin/agent-web list-tabs
+./bin/agent-web cdp target <targetId> Runtime.evaluate '{"expression":"location.href","returnByValue":true}'
+```
+
+Pass `-` as the params argument to read JSON from stdin:
+
+```bash
+printf '%s\n' '{"expression":"document.body.innerText","returnByValue":true}' \
+  | ./bin/agent-web cdp Runtime.evaluate -
+```
+
+Output is raw JSON from CDP. Target-scoped commands may only address tabs owned
+by this caller session.
 
 ## Screenshot
 
