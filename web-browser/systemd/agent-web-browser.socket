@@ -3,7 +3,7 @@ Description=Agent Web Browser daemon socket
 
 [Socket]
 ListenStream=%t/agent-web/browser.sock
-SocketDirectory=agent-web
+DirectoryMode=0755
 RemoveOnStop=yes
 
 [Install]
