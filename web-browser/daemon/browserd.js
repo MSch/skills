@@ -9,6 +9,7 @@ import {
   readFileSync,
   readlinkSync,
   rmSync,
+  writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -61,6 +62,20 @@ function readText(path) {
   } catch {
     return null;
   }
+}
+
+function readJson(path) {
+  const text = readText(path);
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    return {};
+  }
+}
+
+function writeJson(path, value) {
+  writeFileSync(path, JSON.stringify(value));
 }
 
 function readUnifiedCgroup(pid) {
@@ -178,6 +193,21 @@ function chromeEnv() {
   return env;
 }
 
+function prepareChromeProfile() {
+  const defaultProfileDir = join(PROFILE_DIR, "Default");
+  ensureDir(defaultProfileDir);
+
+  const preferencesPath = join(defaultProfileDir, "Preferences");
+  const preferences = readJson(preferencesPath);
+  preferences.translate = { ...(preferences.translate || {}), enabled: false };
+  preferences.profile = {
+    ...(preferences.profile || {}),
+    exit_type: "Normal",
+    exited_cleanly: true,
+  };
+  writeJson(preferencesPath, preferences);
+}
+
 async function isChromeUp() {
   try {
     const response = await fetch(`http://${CHROME_HOST}:${CHROME_PORT}/json/version`, {
@@ -193,6 +223,7 @@ async function startChrome() {
   if (await assertExistingChromeEndpointOwned()) return;
 
   ensureDir(PROFILE_DIR);
+  prepareChromeProfile();
   for (const staleFile of [
     "SingletonCookie",
     "SingletonLock",
