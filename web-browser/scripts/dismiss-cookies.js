@@ -12,7 +12,6 @@
  */
 
 import { connect } from "./cdp.js";
-import { applyActiveEmulation } from "./emulation-state.js";
 
 const DEBUG = process.env.DEBUG === "1";
 const log = DEBUG ? (...args) => console.error("[debug]", ...args) : () => {};
@@ -310,9 +309,6 @@ try {
 
   log("attaching to page...");
   const sessionId = await cdp.attachToPage(page.targetId);
-
-  log("applying active emulation (if configured)...");
-  await applyActiveEmulation(cdp, sessionId);
 
   // Wait a bit for consent dialogs to appear
   await new Promise((r) => setTimeout(r, 500));

@@ -45,19 +45,6 @@ BROWSER_DEBUG_PORT=9333 ./scripts/start.js
 
 Navigate current tab or open new tab.
 
-## Device Emulation (Mobile)
-
-```bash
-./scripts/emulate.js --list
-./scripts/emulate.js iphone-14
-./scripts/emulate.js pixel-7 --landscape
-./scripts/emulate.js --reset
-```
-
-Set an active device emulation preference (viewport, DPR, touch, UA) for browser skill commands. Use `--reset` to clear.
-
-Commands like `nav.js`, `eval.js`, `pick.js`, `dismiss-cookies.js`, and `screenshot.js` automatically apply the active preference.
-
 ## Evaluate JavaScript
 
 ```bash
@@ -73,15 +60,12 @@ Execute JavaScript in active tab (async context). Be careful with string escapin
 ```bash
 ./scripts/screenshot.js
 ./scripts/screenshot.js --full-page
-./scripts/screenshot.js --device iphone-14
-./scripts/screenshot.js --device pixel-7 --full-page
 ```
 
 Takes a screenshot and returns a temp file path.
 
 - Default: current viewport
 - `--full-page`: captures full document height
-- `--device <preset>`: temporary mobile emulation for that screenshot only
 
 ## Pick Elements
 
@@ -103,17 +87,6 @@ Automatically dismisses EU cookie consent dialogs.
 Run after navigating to a page:
 ```bash
 ./scripts/nav.js https://example.com && ./scripts/dismiss-cookies.js
-```
-
-## Quick Mobile Debug Flow
-
-```bash
-./scripts/start.js
-./scripts/nav.js https://example.com
-./scripts/emulate.js iphone-14
-./scripts/nav.js https://example.com      # reload with mobile UA
-./scripts/dismiss-cookies.js
-./scripts/screenshot.js --full-page
 ```
 
 ## Background Logging (Console + Errors + Network)
