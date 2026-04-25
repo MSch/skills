@@ -157,13 +157,11 @@ async function main() {
       formatTable(
         status.clients.map((client) => ({
           client: client.id,
-          pid: client.leaderPid || "",
           tabs: client.tabs,
           active: client.activeTargetId || "",
         })),
         [
           { key: "client", label: "CLIENT" },
-          { key: "pid", label: "PID" },
           { key: "tabs", label: "TABS" },
           { key: "active", label: "ACTIVE_TARGET" },
         ],
