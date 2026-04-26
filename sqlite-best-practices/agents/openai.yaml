@@ -1,0 +1,4 @@
+interface:
+  display_name: "SQLite Best Practices"
+  short_description: "SQLite schema and migration patterns"
+  default_prompt: "Use these SQLite best practices for schema design, STRICT tables, connection pragmas, WAL mode, migration coordination, reflink backups, reload-safe web startup, and Python/yoyo implementation details where relevant."
